@@ -53,6 +53,7 @@ from services.lastfm_auth_service import LastFmAuthService
 from services.scrobble_service import ScrobbleService
 from services.cache_status_service import CacheStatusService
 from services.version_service import VersionService
+from services.track_download_service import TrackDownloadService
 
 from .cache_providers import (
     get_cache,
@@ -105,6 +106,7 @@ from .service_providers import (
     get_plex_library_service,
     get_plex_playback_service,
     get_version_service,
+    get_track_download_service,
 )
 
 
@@ -155,3 +157,4 @@ PlexPlaybackServiceDep = Annotated[PlexPlaybackService, Depends(get_plex_playbac
 CacheStatusServiceDep = Annotated[CacheStatusService, Depends(get_cache_status_service)]
 GitHubRepositoryDep = Annotated[GitHubRepository, Depends(get_github_repository)]
 VersionServiceDep = Annotated[VersionService, Depends(get_version_service)]
+TrackDownloadServiceDep = Annotated[TrackDownloadService, Depends(get_track_download_service)]

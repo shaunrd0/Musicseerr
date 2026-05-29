@@ -173,10 +173,34 @@ export type ArtistReleases = {
 	source_total_count: number | null;
 };
 
+// Mirrors backend.TrackButtonVisibility — per-context force-off flags
+// for the track-row action cluster. true = let the existing
+// source-availability gate decide; false = always hide.
+export type TrackButtonVisibility = {
+	lidarr_request: boolean;
+	track_download: boolean;
+	preview: boolean;
+	yt_play: boolean;
+	jellyfin: boolean;
+	local_files: boolean;
+	navidrome: boolean;
+	plex: boolean;
+};
+
+export type TrackButtonKey = keyof TrackButtonVisibility;
+
+export type DownloadOptions = {
+	popular_songs: TrackButtonVisibility;
+	album_page: TrackButtonVisibility;
+};
+
+export type DownloadOptionsContext = keyof DownloadOptions;
+
 export type UserPreferences = {
 	primary_types: string[];
 	secondary_types: string[];
 	release_statuses: string[];
+	download_options: DownloadOptions;
 };
 
 export type ReleaseTypeOption = {
@@ -273,6 +297,7 @@ export type HomeSettings = {
 	cache_ttl_personal: number;
 	show_whats_hot: boolean;
 	show_globally_trending: boolean;
+	show_now_playing: boolean;
 };
 
 export type HomeArtist = {

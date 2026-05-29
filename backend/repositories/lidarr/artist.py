@@ -192,6 +192,37 @@ class LidarrArtistRepository(LidarrBase):
         except Exception as e:  # noqa: BLE001
             return None
 
+    async def trigger_refresh_by_mbid(self, artist_mbid: str) -> int | None:
+        """Fire RefreshArtist for the artist matching `artist_mbid` (best effort,
+        does NOT wait for completion). Returns the Lidarr command id on success.
+
+        Used by the track-download flow to scope a rescan to JUST the artist
+        whose file was just written, rather than a full RescanFolders. Failures
+        are swallowed — this is an enhancement, not a critical-path call.
+        """
+        try:
+            items = await self._get("/api/v1/artist", params={"mbId": artist_mbid})
+            if not items or not isinstance(items, list):
+                logger.debug("trigger_refresh_by_mbid: no Lidarr artist for mbid=%s", artist_mbid)
+                return None
+            artist_id = items[0].get("id")
+            if not artist_id:
+                return None
+            cmd = await self._post_command(
+                {"name": "RefreshArtist", "artistId": artist_id}
+            )
+            cmd_id = cmd.get("id") if isinstance(cmd, dict) else None
+            logger.info(
+                "trigger_refresh_by_mbid: fired RefreshArtist artist_id=%s mbid=%s cmd_id=%s",
+                artist_id, artist_mbid, cmd_id,
+            )
+            return cmd_id
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "trigger_refresh_by_mbid failed for mbid=%s: %s", artist_mbid, e
+            )
+            return None
+
     async def delete_artist(self, artist_id: int, delete_files: bool = False) -> bool:
         try:
             params = {"deleteFiles": str(delete_files).lower(), "addImportListExclusion": "false"}

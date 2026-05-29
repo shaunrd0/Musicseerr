@@ -702,7 +702,12 @@ class LibraryService:
             except Exception:  # noqa: BLE001
                 logger.debug("Jellyfin track resolution failed for %s", album_mbid, exc_info=True)
 
-        await self._memory_cache.set(cache_key, result, ttl_seconds=3600)
+        # Short TTL — Lidarr's track-file IDs change on every rescan + import,
+        # so a long cache holds stale IDs whose stream attempts then 404. With
+        # the download-complete fan-out invalidating the cache on real changes
+        # PLUS the stream endpoint self-healing on 404 (see stream.py), 60s
+        # is enough to absorb burst traffic without holding stale data.
+        await self._memory_cache.set(cache_key, result, ttl_seconds=60)
         return result
 
     async def resolve_tracks_batch(

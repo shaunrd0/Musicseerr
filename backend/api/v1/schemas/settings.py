@@ -62,10 +62,45 @@ class LastFmAuthSessionResponse(AppStruct):
     username: str = ""
 
 
+class TrackButtonVisibility(AppStruct):
+    """Per-context visibility flags for the track-row action cluster.
+
+    Each flag is a force-off: when False, the corresponding button is
+    suppressed even if its underlying source is configured. When True,
+    the existing source-availability gate applies (e.g., the Jellyfin
+    button still only shows when a jellyfin server is configured and
+    the track is mapped to a file there).
+
+    Default all True — preserves pre-fork behavior, so users with no
+    `download_options` key in config.json see no change after upgrade.
+
+    The same shape is reused for both the Popular Songs row (which today
+    only renders `lidarr_request` and `track_download`) and the Album
+    page row (which renders the full cluster). Carrying all flags in
+    both contexts means a future expansion to e.g. show Plex playback
+    next to Popular Songs needs no schema migration.
+    """
+
+    lidarr_request: bool = True
+    track_download: bool = True
+    preview: bool = True
+    yt_play: bool = True
+    jellyfin: bool = True
+    local_files: bool = True
+    navidrome: bool = True
+    plex: bool = True
+
+
+class DownloadOptions(AppStruct):
+    popular_songs: TrackButtonVisibility = msgspec.field(default_factory=TrackButtonVisibility)
+    album_page: TrackButtonVisibility = msgspec.field(default_factory=TrackButtonVisibility)
+
+
 class UserPreferences(AppStruct):
     primary_types: list[str] = msgspec.field(default_factory=lambda: ["album", "ep", "single"])
     secondary_types: list[str] = msgspec.field(default_factory=lambda: ["studio"])
     release_statuses: list[str] = msgspec.field(default_factory=lambda: ["official"])
+    download_options: DownloadOptions = msgspec.field(default_factory=DownloadOptions)
 
 
 class LidarrConnectionSettings(AppStruct):
@@ -171,18 +206,26 @@ class HomeSettings(AppStruct):
     cache_ttl_personal: int = 300
     show_whats_hot: bool = True
     show_globally_trending: bool = True
-
-    def __post_init__(self) -> None:
-        if self.cache_ttl_trending < 300 or self.cache_ttl_trending > 86400:
-            raise msgspec.ValidationError("cache_ttl_trending must be between 300 and 86400")
-        if self.cache_ttl_personal < 60 or self.cache_ttl_personal > 3600:
-            raise msgspec.ValidationError("cache_ttl_personal must be between 60 and 3600")
+    # Defaults False because Plex /status/sessions returns ALL active audio
+    # streams across the whole server with no library-section filter — on a
+    # shared instance that means anyone hitting the UI sees what every other
+    # household member is listening to. Local MusicSeerr playback (the user's
+    # own tab) is unaffected; this only gates the server-derived feed used
+    # by HomeSectionNowPlaying, SidebarVisualiser, and the /library/* pages.
+    show_now_playing: bool = False
 
 
 class LocalFilesConnectionSettings(AppStruct):
     enabled: bool = False
     music_path: str = "/music"
-    lidarr_root_path: str = "/music"
+    # Lidarr's container-internal root path — the prefix musicseerr strips
+    # from Lidarr-returned track paths before joining with music_path. Must
+    # match Lidarr's /data convention (LSIO + hotio *arr images all mount
+    # /data); the upstream default of /music was wrong for any deployment
+    # that pairs musicseerr with a real Lidarr instance. Symptom of the
+    # wrong value: /api/v1/stream/local/<id> returns 404 because the remap
+    # produces /music/data/<artist>/... which doesn't exist.
+    lidarr_root_path: str = "/data"
 
 
 class LocalFilesVerifyResponse(AppStruct):

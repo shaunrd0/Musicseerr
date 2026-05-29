@@ -70,6 +70,8 @@ from .service_providers import (  # noqa: F401
     get_plex_library_service,
     get_plex_playback_service,
     get_version_service,
+    get_track_download_service,
+    get_lidarr_request_service,
 )
 
 from .type_aliases import (  # noqa: F401
@@ -120,6 +122,7 @@ from .type_aliases import (  # noqa: F401
     CacheStatusServiceDep,
     GitHubRepositoryDep,
     VersionServiceDep,
+    TrackDownloadServiceDep,
 )
 
 from .cleanup import (  # noqa: F401

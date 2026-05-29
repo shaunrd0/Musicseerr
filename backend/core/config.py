@@ -66,6 +66,52 @@ class Settings(BaseSettings):
     audiodb_api_key: str = Field(default="123")
     audiodb_premium: bool = Field(default=False, description="Set to true if using a premium AudioDB API key")
     instance_id: str = Field(default="", description="Auto-generated per-instance UUID for User-Agent differentiation")
+
+    # Inline track-download feature (fork-only). Stamped per musicseerr instance via env:
+    # public musicseerr -> "music"; admin musicseerr-personal -> "music-personal";
+    # public musicseerr-shared -> "music-shared". Backend rejects any other value
+    # and the client cannot override it.
+    musicseerr_library: str = Field(
+        default="music",
+        description="Target library for track downloads: 'music', 'music-personal', or 'music-shared'.",
+    )
+    yt_dlp_worker_url: str = Field(
+        default="http://yt-dlp-worker:4949",
+        description="Base URL for the yt-dlp-worker sidecar that performs single-track downloads.",
+    )
+
+    # Plex notification on download-complete (fork-only). When all three are set,
+    # the track-download flow fires `/library/sections/<id>/refresh` after each
+    # successful download so Plex picks up the new file immediately. Per-instance:
+    # musicseerr -> section 3, musicseerr-personal -> 6, musicseerr-shared -> 7.
+    # Empty = feature disabled (download still works, Plex just won't auto-scan).
+    plex_url: str = Field(
+        default="",
+        description="Plex base URL for post-download library-section refresh. Empty disables the integration.",
+    )
+    plex_token: str = Field(
+        default="",
+        description="Plex authentication token (X-Plex-Token header).",
+    )
+    plex_section_id: int = Field(
+        default=0,
+        description="Plex library section ID matching this musicseerr's library (3/6/7 in our deployment).",
+    )
+
+    @field_validator("musicseerr_library")
+    @classmethod
+    def validate_musicseerr_library(cls, v: str) -> str:
+        normalised = v.strip().lower()
+        if normalised not in {"music", "music-personal", "music-shared"}:
+            raise ValueError(
+                f"musicseerr_library must be 'music', 'music-personal', or 'music-shared'; got '{v}'"
+            )
+        return normalised
+
+    @field_validator("yt_dlp_worker_url")
+    @classmethod
+    def validate_worker_url(cls, v: str) -> str:
+        return v.rstrip("/")
     
     @field_validator("log_level")
     @classmethod

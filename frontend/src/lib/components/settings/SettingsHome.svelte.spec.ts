@@ -8,10 +8,13 @@ vi.mock('$env/dynamic/public', () => ({
 
 import SettingsHome from './SettingsHome.svelte';
 
-function mockHomeSettings(overrides: { show_whats_hot?: boolean } = {}) {
+function mockHomeSettings(
+	overrides: { show_whats_hot?: boolean; show_now_playing?: boolean } = {}
+) {
 	return {
 		show_whats_hot: true,
 		show_globally_trending: true,
+		show_now_playing: false,
 		cache_ttl_trending: 3600,
 		cache_ttl_personal: 300,
 		...overrides
@@ -108,6 +111,40 @@ describe('SettingsHome.svelte', () => {
 			const toggle = document.querySelector('input[type="checkbox"].toggle') as HTMLInputElement;
 			expect(toggle).not.toBeNull();
 			expect(toggle.checked).toBe(true);
+		});
+	});
+
+	it('renders Show currently listening toggle', async () => {
+		globalThis.fetch = mockJsonResponse(mockHomeSettings());
+		render(SettingsHome);
+
+		const label = page.getByText('Show currently listening');
+		await expect.element(label).toBeInTheDocument();
+	});
+
+	it('currently-listening toggle defaults to the loaded value (off)', async () => {
+		globalThis.fetch = mockJsonResponse(mockHomeSettings({ show_now_playing: false }));
+		render(SettingsHome);
+
+		await vi.waitFor(() => {
+			const toggles = document.querySelectorAll(
+				'input[type="checkbox"].toggle'
+			) as NodeListOf<HTMLInputElement>;
+			expect(toggles.length).toBeGreaterThanOrEqual(2);
+			expect(toggles[1].checked).toBe(false);
+		});
+	});
+
+	it('currently-listening toggle reflects loaded state when on', async () => {
+		globalThis.fetch = mockJsonResponse(mockHomeSettings({ show_now_playing: true }));
+		render(SettingsHome);
+
+		await vi.waitFor(() => {
+			const toggles = document.querySelectorAll(
+				'input[type="checkbox"].toggle'
+			) as NodeListOf<HTMLInputElement>;
+			expect(toggles.length).toBeGreaterThanOrEqual(2);
+			expect(toggles[1].checked).toBe(true);
 		});
 	});
 });

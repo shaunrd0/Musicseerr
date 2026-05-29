@@ -6,7 +6,9 @@
 		UserPreferences,
 		ReleaseTypeOption,
 		LidarrMetadataProfilePreferences,
-		MetadataProfile
+		MetadataProfile,
+		TrackButtonKey,
+		DownloadOptionsContext
 	} from '$lib/types';
 	import { invalidateQueriesWithPersister } from '$lib/queries/QueryClient';
 	import { ArtistQueryKeyFactory } from '$lib/queries/artist/ArtistQueryKeyFactory';
@@ -14,7 +16,31 @@
 	let preferences: UserPreferences = $state({
 		primary_types: [],
 		secondary_types: [],
-		release_statuses: []
+		release_statuses: [],
+		// Defaults all-on — mirrors backend.TrackButtonVisibility defaults
+		// and pre-fork behavior. Replaced by the server response on load.
+		download_options: {
+			popular_songs: {
+				lidarr_request: true,
+				track_download: true,
+				preview: true,
+				yt_play: true,
+				jellyfin: true,
+				local_files: true,
+				navidrome: true,
+				plex: true
+			},
+			album_page: {
+				lidarr_request: true,
+				track_download: true,
+				preview: true,
+				yt_play: true,
+				jellyfin: true,
+				local_files: true,
+				navidrome: true,
+				plex: true
+			}
+		}
 	});
 	let saving = $state(false);
 	let saveMessage = $state('');
@@ -61,6 +87,94 @@
 		{ id: 'bootleg', title: 'Bootleg', description: 'Unofficial bootleg recordings' },
 		{ id: 'pseudo-release', title: 'Pseudo-Release', description: 'Placeholder or meta releases' }
 	];
+
+	// Per-button metadata for the Download Options table. `contexts` lists
+	// where the button actually renders today — the toggle is hidden for
+	// contexts where the button isn't rendered (e.g., the Popular Songs
+	// row only shows lidarr_request + track_download). Keeping the schema
+	// carrying all 8 keys in both contexts means a future expansion (e.g.
+	// adding Plex playback to Popular Songs) needs no migration — just
+	// flip the `contexts` array here.
+	type TrackButtonOption = {
+		key: TrackButtonKey;
+		title: string;
+		description: string;
+		contexts: DownloadOptionsContext[];
+	};
+
+	// "Download" buttons — actions that pull a track into the library.
+	// TrackDownloadButton already covers both YouTube and Spotify behind
+	// its own source picker, so it counts as one row regardless of source.
+	const downloadButtons: TrackButtonOption[] = [
+		{
+			key: 'lidarr_request',
+			title: 'Request via Lidarr',
+			description: 'Adds the track to Lidarr and triggers a search through your configured indexers.',
+			contexts: ['popular_songs', 'album_page']
+		},
+		{
+			key: 'track_download',
+			title: 'Direct download (yt-dlp)',
+			description:
+				'Grabs the track via the yt-dlp-worker. The button itself has an internal YouTube / Spotify source picker.',
+			contexts: ['popular_songs', 'album_page']
+		}
+	];
+
+	// "Playback" buttons — listen / queue / play, no library write. Each
+	// is still source-availability-gated (the Jellyfin button only renders
+	// when a Jellyfin server is configured AND the track is mapped to a
+	// file there); unchecking here force-hides on top of that gate.
+	const playbackButtons: TrackButtonOption[] = [
+		{
+			key: 'preview',
+			title: 'YouTube preview',
+			description: 'Inline preview/scrub of the track on YouTube without leaving the page.',
+			contexts: ['album_page']
+		},
+		{
+			key: 'yt_play',
+			title: 'YouTube play',
+			description: 'Queue the track for playback via the YouTube player.',
+			contexts: ['album_page']
+		},
+		{
+			key: 'jellyfin',
+			title: 'Jellyfin',
+			description: 'Play the track from your Jellyfin server when available.',
+			contexts: ['album_page']
+		},
+		{
+			key: 'local_files',
+			title: 'Local files',
+			description: 'Play the track from the local-files library when available.',
+			contexts: ['album_page']
+		},
+		{
+			key: 'navidrome',
+			title: 'Navidrome',
+			description: 'Play the track from your Navidrome server when available.',
+			contexts: ['album_page']
+		},
+		{
+			key: 'plex',
+			title: 'Plex',
+			description: 'Play the track from your Plex server when available.',
+			contexts: ['album_page']
+		}
+	];
+
+	function toggleDownloadOption(context: DownloadOptionsContext, key: TrackButtonKey): void {
+		// Object-spread re-assignment for Svelte 5 deep-reactivity safety —
+		// matches the immutable update style used by toggleType above.
+		preferences.download_options = {
+			...preferences.download_options,
+			[context]: {
+				...preferences.download_options[context],
+				[key]: !preferences.download_options[context][key]
+			}
+		};
+	}
 
 	function toggleType(
 		category: 'primary_types' | 'secondary_types' | 'release_statuses',
@@ -308,6 +422,46 @@
 	</div>
 {/snippet}
 
+{#snippet trackButtonTable(buttons: TrackButtonOption[], context: DownloadOptionsContext)}
+	{@const rows = buttons.filter((b) => b.contexts.includes(context))}
+	{#if rows.length === 0}
+		<p class="text-sm text-base-content/60 italic">
+			(none of these buttons render in this slot today)
+		</p>
+	{:else}
+		<div class="overflow-x-auto">
+			<table class="table">
+				<thead>
+					<tr>
+						<th class="w-12 text-center">
+							<span class="text-xs opacity-60">Show</span>
+						</th>
+						<th>Button</th>
+						<th class="hidden sm:table-cell">Description</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each rows as btn (btn.key)}
+						{@const enabled = preferences.download_options[context][btn.key]}
+						<tr>
+							<td class="w-12 text-center">
+								<input
+									type="checkbox"
+									class="checkbox checkbox-primary checkbox-sm"
+									checked={enabled}
+									onchange={() => toggleDownloadOption(context, btn.key)}
+								/>
+							</td>
+							<td class="font-medium">{btn.title}</td>
+							<td class="text-base-content/70 hidden sm:table-cell">{btn.description}</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		</div>
+	{/if}
+{/snippet}
+
 <div class="card bg-base-200">
 	<div class="card-body">
 		<h2 class="card-title text-2xl mb-4">Included Releases</h2>
@@ -387,25 +541,67 @@
 			<h3 class="text-xl font-semibold mb-4">Release Statuses</h3>
 			{@render typeTable(releaseStatuses, 'release_statuses')}
 		</div>
+	</div>
+</div>
 
-		<div class="card-actions justify-end items-center gap-4">
-			{#if saveMessage}
-				<div
-					class="alert flex-1"
-					class:alert-success={saveMessage.includes('success')}
-					class:alert-error={saveMessage.includes('Failed')}
-				>
-					<span>{saveMessage}</span>
-				</div>
-			{/if}
-			<button class="btn btn-primary" onclick={handleSave} disabled={saving}>
-				{#if saving}
-					<span class="loading loading-spinner loading-sm"></span>
-					Saving...
-				{:else}
-					Save Settings
-				{/if}
-			</button>
+<div class="card bg-base-200 mt-6">
+	<div class="card-body">
+		<h2 class="card-title text-2xl mb-4">Download Options</h2>
+		<p class="text-base-content/70 mb-6">
+			Choose which <em>download</em> buttons appear next to each track. Direct download already
+			covers both YouTube and Spotify via the button's own source picker, so it counts once.
+			Playback / preview buttons live in the separate card below.
+		</p>
+
+		<div class="mb-8">
+			<h3 class="text-xl font-semibold mb-4">Album Track List</h3>
+			{@render trackButtonTable(downloadButtons, 'album_page')}
+		</div>
+
+		<div class="mb-8">
+			<h3 class="text-xl font-semibold mb-4">Popular Songs</h3>
+			{@render trackButtonTable(downloadButtons, 'popular_songs')}
 		</div>
 	</div>
+</div>
+
+<div class="card bg-base-200 mt-6">
+	<div class="card-body">
+		<h2 class="card-title text-2xl mb-4">Playback Buttons</h2>
+		<p class="text-base-content/70 mb-6">
+			Choose which <em>playback</em> buttons appear next to each track. Unchecking forces a button
+			hidden; checking lets the existing source-availability gate decide (e.g., the Jellyfin button
+			still only renders when a Jellyfin server is configured and the track is mapped there).
+		</p>
+
+		<div class="mb-8">
+			<h3 class="text-xl font-semibold mb-4">Album Track List</h3>
+			{@render trackButtonTable(playbackButtons, 'album_page')}
+		</div>
+
+		<div class="mb-8">
+			<h3 class="text-xl font-semibold mb-4">Popular Songs</h3>
+			{@render trackButtonTable(playbackButtons, 'popular_songs')}
+		</div>
+	</div>
+</div>
+
+<div class="card-actions justify-end items-center gap-4 mt-6">
+	{#if saveMessage}
+		<div
+			class="alert flex-1"
+			class:alert-success={saveMessage.includes('success')}
+			class:alert-error={saveMessage.includes('Failed')}
+		>
+			<span>{saveMessage}</span>
+		</div>
+	{/if}
+	<button class="btn btn-primary" onclick={handleSave} disabled={saving}>
+		{#if saving}
+			<span class="loading loading-spinner loading-sm"></span>
+			Saving...
+		{:else}
+			Save Settings
+		{/if}
+	</button>
 </div>

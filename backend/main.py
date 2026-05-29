@@ -52,6 +52,8 @@ from api.v1.routes import plex_library as plex_library_routes
 from api.v1.routes import plex_auth as plex_auth_routes
 from api.v1.routes import version as version_routes
 from api.v1.routes import download as download_routes
+from api.v1.routes import track_download as track_download_routes
+from api.v1.routes import lidarr_request as lidarr_request_routes
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -289,6 +291,9 @@ app.add_middleware(
         "/api/v1/search": (10.0, 20),
         "/api/v1/discover": (10.0, 20),
         "/api/v1/covers": (15.0, 30),
+        # No track-download override — middleware matches by prefix and would
+        # drain the bucket via the polling GETs. The actual rate limit is the
+        # worker's serial queue on gnat.
     },
 )
 app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6)
@@ -344,6 +349,8 @@ v1_router.include_router(profile.router)
 v1_router.include_router(playlists.router)
 v1_router.include_router(version_routes.router)
 v1_router.include_router(download_routes.router)
+v1_router.include_router(track_download_routes.router)
+v1_router.include_router(lidarr_request_routes.router)
 app.include_router(v1_router)
 
 mount_frontend(app)

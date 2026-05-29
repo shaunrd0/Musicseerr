@@ -10,12 +10,48 @@ from api.v1.schemas.stream import (
     StopReportRequest,
 )
 from core.dependencies import (
+    get_cache,
     get_jellyfin_playback_service,
     get_local_files_service,
     get_navidrome_playback_service,
     get_plex_playback_service,
 )
 from core.exceptions import ExternalServiceError, PlaybackNotAllowedError, ResourceNotFoundError
+
+# Cache prefixes cleared on stream 404. Must include the upstream Lidarr
+# caches too — clearing only source_resolution leaves album-details + tracks
+# cached for 5 more min, so the next resolve re-fetches but still gets stale
+# Lidarr data back. Mirrors _DOWNLOAD_COMPLETE_CACHE_PREFIXES in
+# services/track_download_service.py.
+_SELF_HEAL_CACHE_PREFIXES = (
+    "source_resolution",
+    "lidarr_album_details:",
+    "lidarr_album_tracks:",
+    "lidarr_album_trackfiles_raw:",
+    "lidarr_artist_albums:",
+    "lidarr_artist_details:",
+)
+
+
+async def _invalidate_resolve_cache_on_404(track_id: int) -> None:
+    """Best-effort: when stream returns 404 due to a stale Lidarr track_file_id
+    or a path-on-disk mismatch, clear all the caches whose stale state could
+    keep replaying the same wrong answer. Next /resolve-tracks call hits Lidarr
+    fresh. Self-healing — user only sees the 404 once per affected album."""
+    try:
+        cache = get_cache()
+        total = 0
+        for prefix in _SELF_HEAL_CACHE_PREFIXES:
+            try:
+                total += await cache.clear_prefix(prefix)
+            except Exception:  # noqa: BLE001, S110
+                pass
+        logger.warning(
+            "stream/local/%d 404 → self-healed: cleared %d cache entries across %d prefixes",
+            track_id, total, len(_SELF_HEAL_CACHE_PREFIXES),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug("cache self-heal failed: %s", e)
 from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
 from services.jellyfin_playback_service import JellyfinPlaybackService
 from services.local_files_service import LocalFilesService
@@ -168,8 +204,14 @@ async def stream_local_file(
             media_type=headers.get("Content-Type", "application/octet-stream"),
         )
     except ResourceNotFoundError:
+        # Lidarr renumbers track_file_ids on rescans/imports. Invalidate the
+        # source_resolution cache so the next /resolve-tracks gets fresh IDs.
+        await _invalidate_resolve_cache_on_404(track_id)
         raise HTTPException(status_code=404, detail="Track file not found")
     except FileNotFoundError:
+        # Lidarr has a track_file record but its path doesn't exist on disk
+        # (drive swap residue, manual file delete, etc.). Same fix: bust cache.
+        await _invalidate_resolve_cache_on_404(track_id)
         raise HTTPException(status_code=404, detail="Track file not found on disk")
     except PermissionError:
         raise HTTPException(status_code=403, detail="Access denied: path is outside the music directory")

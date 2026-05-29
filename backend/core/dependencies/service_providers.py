@@ -657,3 +657,27 @@ def get_version_service() -> "VersionService":
 
     github_repo = get_github_repository()
     return VersionService(github_repo)
+
+
+@singleton
+def get_track_download_service() -> "TrackDownloadService":
+    from core.config import get_settings
+    from services.track_download_service import TrackDownloadService
+
+    settings = get_settings()
+    return TrackDownloadService(
+        worker_url=settings.yt_dlp_worker_url,
+        library=settings.musicseerr_library,
+        lidarr_repository=get_lidarr_repository(),
+        memory_cache=get_cache(),
+        plex_url=settings.plex_url,
+        plex_token=settings.plex_token,
+        plex_section_id=settings.plex_section_id,
+    )
+
+
+@singleton
+def get_lidarr_request_service() -> "LidarrRequestService":
+    from services.lidarr_request_service import LidarrRequestService
+
+    return LidarrRequestService(lidarr_repository=get_lidarr_repository())

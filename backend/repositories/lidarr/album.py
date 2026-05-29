@@ -315,6 +315,109 @@ class LidarrAlbumRepository(LidarrHistoryRepository):
             logger.error(f"Failed to delete album {album_id}: {e}")
             raise
 
+    async def get_album_tracks_raw(self, album_id: int) -> list[dict[str, Any]]:
+        """Return Lidarr's raw /track response for an album.
+
+        Distinct from get_album_tracks (which projects to a simplified
+        UI-friendly shape and drops foreignTrackId / foreignRecordingId / id).
+        Callers that need MBIDs or the Lidarr internal track id (e.g., to
+        flip track monitor state) want this method.
+
+        Returns tracks for the currently-monitored release. For the full
+        cross-release set use get_album_tracks_raw_by_release per release.
+        """
+        try:
+            data = await self._get("/api/v1/track", params={"albumId": album_id})
+            return data if isinstance(data, list) else []
+        except Exception as e:  # noqa: BLE001
+            logger.error("get_album_tracks_raw failed for album %d: %s", album_id, e)
+            return []
+
+    async def get_album_tracks_raw_by_release(
+        self, album_release_id: int
+    ) -> list[dict[str, Any]]:
+        """Return raw tracks for a specific AlbumRelease.
+
+        Lidarr's /track endpoint accepts albumReleaseId as a filter; this
+        is the only way to see tracks on a non-monitored release (the
+        albumId filter only returns the active release's tracks).
+        """
+        try:
+            data = await self._get(
+                "/api/v1/track", params={"albumReleaseId": album_release_id}
+            )
+            return data if isinstance(data, list) else []
+        except Exception as e:  # noqa: BLE001
+            logger.error(
+                "get_album_tracks_raw_by_release failed for release %d: %s",
+                album_release_id, e,
+            )
+            return []
+
+    async def wait_for_album_tracks_raw(
+        self, album_id: int, timeout_s: float = 30.0, poll_s: float = 1.0
+    ) -> list[dict[str, Any]]:
+        """Poll get_album_tracks_raw until Lidarr has populated the track list.
+
+        Same shape as wait_for_album_tracks but returns the raw track payload
+        so callers can access foreignTrackId / foreignRecordingId / id.
+        """
+        deadline = time.monotonic() + timeout_s
+        tracks: list[dict[str, Any]] = []
+        while time.monotonic() < deadline:
+            tracks = await self.get_album_tracks_raw(album_id)
+            if tracks:
+                return tracks
+            await asyncio.sleep(poll_s)
+        return tracks
+
+    async def set_track_monitored(self, track_ids: list[int], monitored: bool) -> bool:
+        """PUT /track/monitor — fork-only endpoint on shaunrd0/Lidarr.
+
+        Stock Lidarr nightly returns 405 (endpoint doesn't exist). Callers
+        are expected to ensure their LIDARR_URL points at a fork instance
+        (currently lidarr-shared on gnat:8688).
+        """
+        if not track_ids:
+            return True
+        try:
+            await self._put(
+                "/api/v1/track/monitor",
+                {"trackIds": track_ids, "monitored": monitored},
+            )
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.error("Failed to set track monitored for %d tracks: %s", len(track_ids), e)
+            return False
+
+    async def wait_for_album_tracks(
+        self, album_id: int, timeout_s: float = 30.0, poll_s: float = 1.0
+    ) -> list[dict[str, Any]]:
+        """Poll get_album_tracks until Lidarr has populated the track list.
+
+        After an album add, Lidarr fetches track metadata from MusicBrainz
+        asynchronously. The track list shows up within a few seconds for
+        most albums; we poll with a short backoff so the caller doesn't
+        need to busy-wait or guess.
+        """
+        # Invalidate the in-process cache once so the first poll fetches fresh.
+        # The cache is set with a 300s TTL inside get_album_tracks itself, and
+        # without this an empty-on-first-call result would be cached and we'd
+        # never see the real tracks until the TTL expired.
+        cache_key = f"{LIDARR_ALBUM_TRACKS_PREFIX}{album_id}"
+        await self._cache.delete(cache_key)
+
+        deadline = time.monotonic() + timeout_s
+        tracks: list[dict[str, Any]] = []
+        while time.monotonic() < deadline:
+            tracks = await self.get_album_tracks(album_id)
+            if tracks:
+                return tracks
+            # Same invalidation reason as above for subsequent polls.
+            await self._cache.delete(cache_key)
+            await asyncio.sleep(poll_s)
+        return tracks
+
     async def set_monitored(self, album_mbid: str, monitored: bool) -> bool:
         lidarr_album = await self._get_album_by_foreign_id(album_mbid)
         if not lidarr_album:
@@ -329,7 +432,20 @@ class LidarrAlbumRepository(LidarrHistoryRepository):
         await self._invalidate_album_list_caches()
         return True
 
-    async def add_album(self, musicbrainz_id: str, artist_repo) -> dict:
+    async def add_album(
+        self,
+        musicbrainz_id: str,
+        artist_repo,
+        search_after_add: bool = True,
+    ) -> dict:
+        """Add an album to Lidarr.
+
+        search_after_add (default True): whether to fire AlbumSearch as part
+        of the add. The single-track Lidarr request flow needs this False so
+        it can unmonitor sibling tracks BEFORE Lidarr's auto-search races
+        the import past the track-monitored gate. All other callers (UI add,
+        playlist import, etc.) keep the existing default-true behavior.
+        """
         t0 = time.monotonic()
         if not musicbrainz_id or not isinstance(musicbrainz_id, str):
             raise ExternalServiceError("Invalid MBID provided")
@@ -361,6 +477,7 @@ class LidarrAlbumRepository(LidarrHistoryRepository):
                 musicbrainz_id, artist_repo, t0,
                 candidate, album_title, album_type, secondary_types,
                 artist_mbid, artist_name,
+                search_after_add=search_after_add,
             )
 
     async def _add_album_locked(
@@ -374,6 +491,7 @@ class LidarrAlbumRepository(LidarrHistoryRepository):
         secondary_types: list,
         artist_mbid: str,
         artist_name: str | None,
+        search_after_add: bool = True,
     ) -> dict:
         # Capture which albums are already monitored so we can revert any Lidarr auto-monitors after the add
         pre_add_monitored_ids: set[int] = set()
@@ -414,10 +532,11 @@ class LidarrAlbumRepository(LidarrHistoryRepository):
             if not is_monitored:
                 album_obj = await self._update_album(album_id, {"monitored": True})
 
-            try:
-                await self._post_command({"name": "AlbumSearch", "albumIds": [album_id]})
-            except ExternalServiceError:
-                pass
+            if search_after_add:
+                try:
+                    await self._post_command({"name": "AlbumSearch", "albumIds": [album_id]})
+                except ExternalServiceError:
+                    pass
 
             await self._unmonitor_auto_monitored_albums(
                 artist_id, musicbrainz_id, album_id, pre_add_monitored_ids
@@ -474,7 +593,7 @@ class LidarrAlbumRepository(LidarrHistoryRepository):
                 "anyReleaseOk": True,
                 "profileId": profile_id,
                 "images": [],
-                "addOptions": {"addType": "automatic", "searchForNewAlbum": True},
+                "addOptions": {"addType": "automatic", "searchForNewAlbum": search_after_add},
             }
 
             try:
@@ -487,12 +606,13 @@ class LidarrAlbumRepository(LidarrHistoryRepository):
                     if album_obj:
                         if not album_obj.get("monitored"):
                             album_obj = await self._update_album(album_obj["id"], {"monitored": True})
-                        try:
-                            await self._post_command(
-                                {"name": "AlbumSearch", "albumIds": [album_obj["id"]]}
-                            )
-                        except ExternalServiceError:
-                            pass
+                        if search_after_add:
+                            try:
+                                await self._post_command(
+                                    {"name": "AlbumSearch", "albumIds": [album_obj["id"]]}
+                                )
+                            except ExternalServiceError:
+                                pass
                 elif "post failed" in err_str or "405" in err_str or "metadata" in err_str:
                     raise ExternalServiceError(
                         f"Lidarr rejected '{album_title}' ({album_type}"
@@ -519,10 +639,11 @@ class LidarrAlbumRepository(LidarrHistoryRepository):
             set_artist_monitored=artist_created,
         )
 
-        try:
-            await self._post_command({"name": "AlbumSearch", "albumIds": [album_id]})
-        except ExternalServiceError:
-            pass
+        if search_after_add:
+            try:
+                await self._post_command({"name": "AlbumSearch", "albumIds": [album_id]})
+            except ExternalServiceError:
+                pass
 
         # Unmonitor albums that Lidarr auto-monitored during the add
         await self._unmonitor_auto_monitored_albums(

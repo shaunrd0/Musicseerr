@@ -7,6 +7,7 @@
 	import { errorModal } from '$lib/stores/errorModal';
 	import { libraryStore } from '$lib/stores/library';
 	import { integrationStore } from '$lib/stores/integration';
+	import { preferencesStore } from '$lib/stores/preferences';
 	import { initCacheTTLs } from '$lib/stores/cacheTtl';
 	import { playerStore } from '$lib/stores/player.svelte';
 	import { launchYouTubePlayback } from '$lib/player/launchYouTubePlayback';
@@ -40,6 +41,7 @@
 	import { requestCountStore } from '$lib/stores/requestCountStore.svelte';
 	import { nowPlayingMerged } from '$lib/stores/nowPlayingMerged.svelte';
 	import { nowPlayingStore } from '$lib/stores/nowPlayingSessions.svelte';
+	import { homeSettingsStore } from '$lib/stores/homeSettings.svelte';
 	import SidebarVisualiser from '$lib/components/SidebarVisualiser.svelte';
 	import { createNavigationProgressController } from '$lib/utils/navigationProgress';
 	import { fromStore } from 'svelte/store';
@@ -140,12 +142,24 @@
 		deferInit(() => {
 			libraryStore.initialize();
 			void imageSettingsStore.load();
+			// Pull saved user preferences (download_options, included
+			// release types, etc.) so components like AlbumTrackList /
+			// TrackRow see the actual saved values on first paint instead
+			// of the all-true client defaults. Without this, the prefs
+			// only loaded when the Settings page mounted, so any other
+			// page rendered with stale defaults.
+			void preferencesStore.load();
 			void restorePlayerSession();
 			void scrobbleManager.init();
 			requestCountStore.startPolling();
 			syncStatus.connect();
 		});
-		integrationStore.ensureLoaded().then(() => {
+		// Load home settings before starting the now-playing poller. The
+		// poller's fetchAll() gate keys on homeSettingsStore.showNowPlaying;
+		// without this load, the first 3s tick can leak server sessions
+		// against the default (which itself defaults False, but if it were
+		// ever flipped True server-side we want the gate to reflect it).
+		Promise.all([integrationStore.ensureLoaded(), homeSettingsStore.ensureLoaded()]).then(() => {
 			nowPlayingStore.start();
 		});
 	});

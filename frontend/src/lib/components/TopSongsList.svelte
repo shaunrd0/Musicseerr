@@ -4,8 +4,14 @@
 	import { API } from '$lib/constants';
 	import { api } from '$lib/api/client';
 	import { playerStore } from '$lib/stores/player.svelte';
+	import { libraryRefresh } from '$lib/stores/libraryRefresh.svelte';
 	import TrackRow from './TrackRow.svelte';
 	import { SvelteMap } from 'svelte/reactivity';
+	import {
+		getLidarrRequestStatus,
+		projectButtonStatus,
+		type LidarrButtonStatus
+	} from '$lib/api/lidarrRequest';
 
 	interface Props {
 		songs: TopSong[];
@@ -25,8 +31,16 @@
 
 	let cacheMap = new SvelteMap<string, boolean>();
 	let resolveMap = new SvelteMap<string, ResolvedTrack>();
+	// Lidarr-side per-track status, keyed by recording_mbid. Built by
+	// fanning out a /lidarr-request/status call per unique album_mbid in
+	// the songs list. Used to render the LidarrRequestButton in its
+	// persistent state (hourglass / checkmark / idle) so songs the user
+	// already requested or downloaded show up that way without a refresh
+	// dropping them back to idle.
+	let lidarrStatusMap = new SvelteMap<string, LidarrButtonStatus>();
 	let lastFetchedKey = $state('');
 	let lastResolveKey = $state('');
+	let lastLidarrStatusKey = $state('');
 
 	function cacheKey(artist: string, track: string): string {
 		return `${artist.toLowerCase()}|${track.toLowerCase()}`;
@@ -49,7 +63,10 @@
 
 	$effect(() => {
 		if (!ytConfigured || songs.length === 0) return;
-		const key = songsFingerprint(songs);
+		// Include libraryRefresh.version in the key so the cache-check refetches
+		// after a successful download (TrackDownloadButton bumps the counter on
+		// first-seen status=done).
+		const key = `${libraryRefresh.version}|${songsFingerprint(songs)}`;
 		if (key === lastFetchedKey) return;
 		lastFetchedKey = key;
 
@@ -75,7 +92,9 @@
 	$effect(() => {
 		const resolvable = songs.filter((s) => s.release_group_mbid && s.track_number != null);
 		if (resolvable.length === 0) return;
-		const key = resolvableFingerprint(songs);
+		// Same as above — bumping libraryRefresh forces re-resolve so newly-
+		// downloaded tracks flip to the "in library" play icon without a page reload.
+		const key = `${libraryRefresh.version}|${resolvableFingerprint(songs)}`;
 		if (key === lastResolveKey) return;
 		lastResolveKey = key;
 
@@ -120,6 +139,44 @@
 			) ?? null
 		);
 	}
+
+	function lidarrStatusForSong(song: TopSong): LidarrButtonStatus {
+		if (!song.recording_mbid) return 'none';
+		return lidarrStatusMap.get(song.recording_mbid) ?? 'none';
+	}
+
+	$effect(() => {
+		// Collect unique album_mbids across all songs in the visible list.
+		// Each one becomes one /lidarr-request/status call. For a typical
+		// 20-song popular list this is ~10–20 albums in parallel; cheap
+		// enough not to need a multi-album batch endpoint yet.
+		const uniqueAlbumMbids = new Set<string>();
+		for (const s of songs) {
+			if (s.release_group_mbid && s.recording_mbid) uniqueAlbumMbids.add(s.release_group_mbid);
+		}
+		if (uniqueAlbumMbids.size === 0) return;
+
+		// Include libraryRefresh.version so the map refreshes after a
+		// successful download — a song goes from `requested` → `downloaded`
+		// without a page reload.
+		const key = `${libraryRefresh.version}|${Array.from(uniqueAlbumMbids).sort().join(';')}`;
+		if (key === lastLidarrStatusKey) return;
+		lastLidarrStatusKey = key;
+
+		(async () => {
+			const responses = await Promise.allSettled(
+				Array.from(uniqueAlbumMbids).map((m) => getLidarrRequestStatus(m))
+			);
+			if (lastLidarrStatusKey !== key) return;
+			for (const r of responses) {
+				if (r.status !== 'fulfilled') continue;
+				for (const t of r.value.tracks) {
+					if (!t.recording_mbid) continue;
+					lidarrStatusMap.set(t.recording_mbid, projectButtonStatus(t));
+				}
+			}
+		})();
+	});
 
 	function buildQueueItems(startSong: TopSong): { items: QueueItem[]; startIndex: number } {
 		const items: QueueItem[] = [];
@@ -195,6 +252,7 @@
 					{ytConfigured}
 					initialCached={cacheMap.get(cacheKey(song.artist_name, song.title)) ?? null}
 					resolvedTrack={getResolvedTrack(song)}
+					lidarrStatus={lidarrStatusForSong(song)}
 					onPlay={() => handlePlay(song)}
 				/>
 			{/each}

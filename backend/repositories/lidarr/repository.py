@@ -32,5 +32,7 @@ class LidarrRepository(
         super().__init__(settings, http_client, cache)
         self._request_history_store = request_history_store
 
-    async def add_album(self, musicbrainz_id: str) -> dict:
-        return await LidarrAlbumRepository.add_album(self, musicbrainz_id, self)
+    async def add_album(self, musicbrainz_id: str, search_after_add: bool = True) -> dict:
+        return await LidarrAlbumRepository.add_album(
+            self, musicbrainz_id, self, search_after_add=search_after_add
+        )

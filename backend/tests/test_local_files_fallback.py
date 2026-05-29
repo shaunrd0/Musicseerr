@@ -15,7 +15,7 @@ def _make_local_files_service(lidarr=None, cache=None):
         cache_ttl_local_files_storage_stats=300,
     )
     prefs.get_local_files_connection.return_value = MagicMock(
-        music_path="/music", lidarr_root_path="/music"
+        music_path="/music", lidarr_root_path="/data"
     )
     cache = cache or AsyncMock()
     return LocalFilesService(

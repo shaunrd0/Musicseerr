@@ -1,5 +1,6 @@
 import { API } from '$lib/constants';
 import { integrationStore } from '$lib/stores/integration';
+import { homeSettingsStore } from '$lib/stores/homeSettings.svelte';
 import { get } from 'svelte/store';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 import type {
@@ -112,6 +113,17 @@ function createNowPlayingStore() {
 
 	async function fetchAll() {
 		if (typeof document !== 'undefined' && document.hidden) return;
+
+		// Privacy gate: when the home setting is off, drop any cached server
+		// sessions and skip the network fetch entirely. The merged store
+		// still emits the user's local MusicSeerr playback because that is
+		// built from playerStore, not from this feed.
+		if (!homeSettingsStore.showNowPlaying) {
+			if (sessions.length > 0) sessions = [];
+			lastGoodSessions.clear();
+			interpBasis.clear();
+			return;
+		}
 
 		const integrations = get(integrationStore);
 		const fetches: Promise<{

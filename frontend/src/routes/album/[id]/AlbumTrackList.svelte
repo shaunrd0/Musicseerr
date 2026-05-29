@@ -10,8 +10,10 @@
 		NavidromeAlbumMatch,
 		NavidromeTrackInfo,
 		PlexAlbumMatch,
-		PlexTrackInfo
+		PlexTrackInfo,
+		TrackButtonVisibility
 	} from '$lib/types';
+	import { preferencesStore } from '$lib/stores/preferences';
 	import type { MenuItem } from '$lib/components/ContextMenu.svelte';
 	import type { RenderedTrackSection } from './albumTrackResolvers';
 	import { resolveSourceTrack } from './albumTrackResolvers';
@@ -23,6 +25,14 @@
 	import TrackPlayButton from '$lib/components/TrackPlayButton.svelte';
 	import TrackPreviewButton from '$lib/components/TrackPreviewButton.svelte';
 	import TrackSourceButton from '$lib/components/TrackSourceButton.svelte';
+	import TrackDownloadButton from '$lib/components/TrackDownloadButton.svelte';
+	import LidarrRequestButton from '$lib/components/LidarrRequestButton.svelte';
+	import {
+		getLidarrRequestStatus,
+		projectButtonStatus,
+		buildStatusLookup,
+		type LidarrButtonStatus
+	} from '$lib/api/lidarrRequest';
 	import ContextMenu from '$lib/components/ContextMenu.svelte';
 	import JellyfinIcon from '$lib/components/JellyfinIcon.svelte';
 	import LocalFilesIcon from '$lib/components/LocalFilesIcon.svelte';
@@ -99,6 +109,80 @@
 		onQuotaUpdate,
 		getTrackContextMenuItems
 	}: Props = $props();
+
+	// Lidarr per-track status. Re-fetched + polled on every album change.
+	//
+	// IMPORTANT: must use $effect (not onMount) for setup so the lookup
+	// rebuilds when SvelteKit navigates between albums — SvelteKit reuses
+	// this component across `/album/A` → `/album/B` transitions, so
+	// onMount only fires once and a stale Album A lookup would leak into
+	// Album B's rendering. The position+disc fallback would then collide
+	// (positions 1,2,3… exist on every album) and every track on Album B
+	// would falsely render as "requested in Lidarr".
+	let statusLookup = $state<ReturnType<typeof buildStatusLookup> | null>(null);
+
+	$effect(() => {
+		// Reactive dep: re-run whenever the album mbid changes.
+		const albumMbid = album?.musicbrainz_id;
+		if (!albumMbid) {
+			statusLookup = null;
+			return;
+		}
+
+		// Reset the lookup BEFORE the fetch lands so buttons default to
+		// idle during the transition (better than briefly showing the
+		// previous album's state).
+		statusLookup = null;
+
+		let cancelled = false;
+		async function refresh() {
+			try {
+				const res = await getLidarrRequestStatus(albumMbid);
+				if (cancelled) return;
+				statusLookup = buildStatusLookup(albumMbid, res);
+			} catch {
+				// Lidarr unreachable or album not in library — leave null.
+				// Buttons fall back to `none` (idle) and remain clickable.
+			}
+		}
+
+		refresh();
+		const handle = setInterval(refresh, 30000);
+
+		return () => {
+			cancelled = true;
+			clearInterval(handle);
+		};
+	});
+
+	function statusFor(
+		recordingId: string | null | undefined,
+		position: number,
+		disc: number
+	): LidarrButtonStatus {
+		if (!statusLookup) return 'none';
+		const albumMbid = album?.musicbrainz_id;
+		if (!albumMbid) return 'none';
+		return projectButtonStatus(statusLookup.lookup(albumMbid, recordingId, position, disc));
+	}
+
+	// User's per-button visibility prefs for the album-page slot. Each
+	// existing per-button render-gate (showJellyfinBtn, youtubeEnabled,
+	// etc.) is AND'd with the matching flag here — unchecked = force-off,
+	// checked = the existing source-availability gate decides.
+	let buttonVisibility = $state<TrackButtonVisibility>({
+		lidarr_request: true,
+		track_download: true,
+		preview: true,
+		yt_play: true,
+		jellyfin: true,
+		local_files: true,
+		navidrome: true,
+		plex: true
+	});
+	preferencesStore.subscribe((prefs) => {
+		buttonVisibility = prefs.download_options.album_page;
+	});
 </script>
 
 <div class="bg-base-200 rounded-box overflow-visible">
@@ -151,22 +235,32 @@
 					(playerStore.currentQueueItem?.discNumber ?? 1) === trackDiscNumber &&
 					playerStore.currentQueueItem?.trackNumber === track.position &&
 					playerStore.isPlaying}
-				{@const showJellyfinBtn = jellyfinEnabled && jellyfinMatch?.found}
-				{@const showLocalBtn = localfilesEnabled && localMatch?.found}
-				{@const showNavidromeBtn = navidromeEnabled && navidromeMatch?.found}
-				{@const showPlexBtn = plexEnabled && plexMatch?.found}
+				{@const showJellyfinBtn = buttonVisibility.jellyfin && jellyfinEnabled && jellyfinMatch?.found}
+				{@const showLocalBtn = buttonVisibility.local_files && localfilesEnabled && localMatch?.found}
+				{@const showNavidromeBtn = buttonVisibility.navidrome && navidromeEnabled && navidromeMatch?.found}
+				{@const showPlexBtn = buttonVisibility.plex && plexEnabled && plexMatch?.found}
 				{@const hasAnySource =
 					tl !== null ||
 					jellyfinTrack !== null ||
 					localTrack !== null ||
 					navidromeTrack !== null ||
 					plexTrack !== null}
-				{@const showPreview = youtubeApiConfigured && !hasAnySource}
+				{@const showPreview = buttonVisibility.preview && youtubeApiConfigured && !hasAnySource}
+				{@const showYtPlay = buttonVisibility.yt_play && youtubeEnabled}
+				{@const showLidarrRequest = buttonVisibility.lidarr_request && !!track.recording_id}
+				{@const showTrackDownload = buttonVisibility.track_download}
 				<li
 					class="list-row group hover:bg-base-300/50 transition-colors p-3 sm:p-4"
 					style={isCurrentlyPlaying ? `background-color: ${colors.accent}20;` : ''}
 				>
-					<div class="list-col-grow flex items-center gap-4 w-full">
+					<!--
+					  flex-wrap so the action cluster (up to 9 buttons: preview /
+					  play / 4 source icons / lidarr-request / download / context-menu)
+					  drops to a second line on narrow mobile viewports instead of
+					  squeezing the track title to zero width via the cluster's
+					  shrink-0.
+					-->
+					<div class="list-col-grow flex flex-wrap items-center gap-x-4 gap-y-2 w-full">
 						<div
 							class="font-medium w-8 text-center shrink-0 {isCurrentlyPlaying
 								? ''
@@ -180,7 +274,7 @@
 							{/if}
 						</div>
 
-						<div class="flex-1 min-w-0">
+						<div class="flex-1 min-w-[10rem]">
 							<div
 								class="font-medium truncate"
 								style={isCurrentlyPlaying ? `color: ${colors.accent};` : ''}
@@ -193,8 +287,7 @@
 							{formatDuration(track.length)}
 						</div>
 
-						{#if youtubeEnabled || showPreview || showJellyfinBtn || showLocalBtn || showNavidromeBtn || showPlexBtn}
-							<div class="flex items-center gap-1.5 shrink-0 ml-auto">
+						<div class="flex flex-wrap items-center gap-1.5 sm:shrink-0 sm:ml-auto justify-end">
 								{#if showPreview}
 									<TrackPreviewButton
 										artist={album.artist_name}
@@ -209,7 +302,7 @@
 									/>
 								{/if}
 
-								{#if youtubeEnabled}
+								{#if showYtPlay}
 									<TrackPlayButton
 										trackNumber={track.position}
 										discNumber={trackDiscNumber}
@@ -283,6 +376,29 @@
 									</TrackSourceButton>
 								{/if}
 
+								{#if showLidarrRequest}
+									<LidarrRequestButton
+										albumMbid={album.musicbrainz_id}
+										trackMbid={track.recording_id}
+										trackTitle={track.title}
+										artistMbid={album.artist_id}
+										trackPosition={track.position}
+										discNumber={trackDiscNumber}
+										initialStatus={statusFor(track.recording_id, track.position, trackDiscNumber)}
+									/>
+								{/if}
+
+								{#if showTrackDownload}
+									<TrackDownloadButton
+										artist={album.artist_name}
+										album={album.title}
+										trackTitle={track.title}
+										artistMbid={album.artist_id}
+										trackPosition={track.position}
+										discNumber={trackDiscNumber}
+									/>
+								{/if}
+
 								<div>
 									<ContextMenu
 										items={getTrackContextMenuItems(
@@ -297,7 +413,6 @@
 									/>
 								</div>
 							</div>
-						{/if}
 					</div>
 				</li>
 			{/each}

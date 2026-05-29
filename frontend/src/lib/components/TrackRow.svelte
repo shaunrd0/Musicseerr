@@ -1,10 +1,14 @@
 <script lang="ts">
 	import { albumHref } from '$lib/utils/entityRoutes';
 	import { Play, Disc3 } from 'lucide-svelte';
-	import type { TopSong, ResolvedTrack } from '$lib/types';
+	import type { TopSong, ResolvedTrack, TrackButtonVisibility } from '$lib/types';
 	import AlbumImage from './AlbumImage.svelte';
 	import LastFmPlaceholder from './LastFmPlaceholder.svelte';
 	import TrackPreviewButton from './TrackPreviewButton.svelte';
+	import TrackDownloadButton from './TrackDownloadButton.svelte';
+	import LidarrRequestButton from './LidarrRequestButton.svelte';
+	import { preferencesStore } from '$lib/stores/preferences';
+	import type { LidarrButtonStatus } from '$lib/api/lidarrRequest';
 
 	interface Props {
 		song: TopSong;
@@ -14,6 +18,7 @@
 		ytConfigured?: boolean;
 		initialCached?: boolean | null;
 		resolvedTrack?: ResolvedTrack | null;
+		lidarrStatus?: LidarrButtonStatus;
 		onPlay?: () => void;
 	}
 
@@ -25,6 +30,7 @@
 		ytConfigured = false,
 		initialCached = null,
 		resolvedTrack = null,
+		lidarrStatus = 'none',
 		onPlay
 	}: Props = $props();
 
@@ -32,6 +38,28 @@
 	let isLastfmNoAlbum = $derived(!hasAlbum && source === 'lastfm');
 	let canPlay = $derived(!!resolvedTrack?.source);
 	let previewEnabled = $derived(showPreview && ytConfigured && !canPlay);
+	// Worker requires a non-empty album for the file path; bucket release-less
+	// tracks under "Singles" so the download still lands somewhere sensible.
+	let downloadAlbum = $derived(song.release_name || 'Singles');
+
+	// Subscribe to the user's per-context button-visibility preferences.
+	// `popular_songs` is the relevant slot for TrackRow (used by the
+	// Popular Songs panel on artist pages). Defaults all-true so first
+	// paint matches pre-fork behavior; the server response replaces this
+	// on load.
+	let buttonVisibility = $state<TrackButtonVisibility>({
+		lidarr_request: true,
+		track_download: true,
+		preview: true,
+		yt_play: true,
+		jellyfin: true,
+		local_files: true,
+		navidrome: true,
+		plex: true
+	});
+	preferencesStore.subscribe((prefs) => {
+		buttonVisibility = prefs.download_options.popular_songs;
+	});
 </script>
 
 {#if hasAlbum}
@@ -39,13 +67,11 @@
 		{#if canPlay}
 			<button
 				onclick={onPlay}
-				class="w-6 shrink-0 flex items-center justify-center cursor-pointer"
-				aria-label="Play {song.title}"
+				class="w-6 shrink-0 flex items-center justify-center cursor-pointer text-primary"
+				aria-label="Play {song.title} (in library)"
+				title="In library — click to play"
 			>
-				<span class="group-hover:hidden text-sm text-base-content/50">{position}</span>
-				<span class="hidden group-hover:block text-primary">
-					<Play class="w-4 h-4 mx-auto fill-current" />
-				</span>
+				<Play class="w-4 h-4 mx-auto fill-current" />
 			</button>
 		{:else if previewEnabled}
 			<span class="w-6 shrink-0 flex items-center justify-center">
@@ -93,6 +119,40 @@
 				</p>
 			</div>
 		</a>
+
+		<!--
+			Action cluster — LidarrRequestButton + TrackDownloadButton.
+			ALWAYS visible at full opacity, no hover dependency. Hover-to-reveal
+			UX confused users on mobile (no hover state at all) and on desktop
+			(per-user preference 2026-05-29). The "already in library" affordance
+			lives in the button title attribute instead.
+		-->
+		<div
+			class="shrink-0 flex items-center gap-1"
+			title={canPlay ? 'Already in library — download again only if you need a fresh copy' : ''}
+		>
+			{#if buttonVisibility.lidarr_request && song.recording_mbid && song.release_group_mbid}
+				<LidarrRequestButton
+					albumMbid={song.release_group_mbid}
+					trackMbid={song.recording_mbid}
+					trackTitle={song.title}
+					trackPosition={song.track_number ?? null}
+					discNumber={song.disc_number ?? null}
+					initialStatus={lidarrStatus}
+					size="sm"
+				/>
+			{/if}
+			{#if buttonVisibility.track_download}
+				<TrackDownloadButton
+					artist={song.artist_name}
+					album={downloadAlbum}
+					trackTitle={song.title}
+					trackPosition={song.track_number ?? null}
+					discNumber={song.disc_number ?? null}
+					size="sm"
+				/>
+			{/if}
+		</div>
 	</div>
 {:else}
 	<div
@@ -103,13 +163,11 @@
 		{#if canPlay}
 			<button
 				onclick={onPlay}
-				class="w-6 shrink-0 flex items-center justify-center cursor-pointer"
-				aria-label="Play {song.title}"
+				class="w-6 shrink-0 flex items-center justify-center cursor-pointer text-primary"
+				aria-label="Play {song.title} (in library)"
+				title="In library — click to play"
 			>
-				<span class="group-hover:hidden text-sm text-base-content/50">{position}</span>
-				<span class="hidden group-hover:block text-primary">
-					<Play class="w-4 h-4 mx-auto fill-current" />
-				</span>
+				<Play class="w-4 h-4 mx-auto fill-current" />
 			</button>
 		{:else if previewEnabled}
 			<span class="w-6 shrink-0 flex items-center justify-center">
@@ -139,6 +197,23 @@
 		<div class="flex-1 min-w-0 grid grid-cols-2 items-center gap-4">
 			<p class="font-medium text-sm truncate min-w-0">{song.title}</p>
 			<p class="text-xs text-base-content/40 truncate min-w-0 text-right italic"></p>
+		</div>
+
+		<!-- Always visible at full opacity, matching the canonical cluster above. -->
+		<div
+			class="shrink-0"
+			title={canPlay ? 'Already in library — download again only if you need a fresh copy' : ''}
+		>
+			{#if buttonVisibility.track_download}
+				<TrackDownloadButton
+					artist={song.artist_name}
+					album={downloadAlbum}
+					trackTitle={song.title}
+					trackPosition={song.track_number ?? null}
+					discNumber={song.disc_number ?? null}
+					size="sm"
+				/>
+			{/if}
 		</div>
 	</div>
 {/if}
